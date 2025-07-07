@@ -15,7 +15,7 @@ app = FastAPI(
     description="A simple FastAPI application connecting to PostgreSQL with a connection pool."
 )
 
-// Middleware
+# Middleware
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     print(f"Request: {request.method} {request.url}")
@@ -43,7 +43,7 @@ items_in_db_gauge = Gauge(
 )
 
 # Register process metrics (includes process_cpu_seconds_total)
-ProcessCollector().register(REGISTRY)
+#ProcessCollector().register(REGISTRY)
 
 # Custom gauge for CPU utilization percentage
 cpu_utilization_gauge = Gauge(
