@@ -4,16 +4,24 @@ import asyncpg
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional # Import Optional for type hinting compatibility with Python 3.9
-
+import psutil
 # Import Prometheus client library
-from prometheus_client import Counter, generate_latest, Gauge
+from prometheus_client import Counter, generate_latest, Gauge , ProcessCollector, REGISTRY
 from starlette.responses import PlainTextResponse
-
+from starlette.requests import Request
 # Initialize FastAPI app
 app = FastAPI(
     title="FastAPI PostgreSQL App",
     description="A simple FastAPI application connecting to PostgreSQL with a connection pool."
 )
+
+// Middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    print(f"Request: {request.method} {request.url}")
+    response = await call_next(request)
+    print(f"Response status: {response.status_code}")
+    return response
 
 # Database connection pool variable
 db_pool = None
@@ -33,6 +41,16 @@ items_in_db_gauge = Gauge(
     'items_in_database',
     'Current number of items stored in the database.'
 )
+
+# Register process metrics (includes process_cpu_seconds_total)
+ProcessCollector().register(REGISTRY)
+
+# Custom gauge for CPU utilization percentage
+cpu_utilization_gauge = Gauge(
+    'process_cpu_utilization_percent',
+    'Process CPU utilization percentage'
+)
+
 
 
 @app.on_event("startup")
@@ -97,13 +115,15 @@ async def read_root():
     """
     Root endpoint to verify the API is running.
     """
-    return {"message": "FastAPI with PostgreSQL connection pool is running!"}
+    return {"message": "FastAPI Metrics Monitoring System is running!"}
 
 @app.get("/metrics", response_class=PlainTextResponse)
 async def metrics():
     """
     Endpoint to expose Prometheus metrics.
     """
+    cpu_percent = psutil.cpu_percent(interval=0.1)
+    cpu_utilization_gauge.set(cpu_percent)
     return PlainTextResponse(generate_latest())
 
 @app.post("/data", response_model=Item)
@@ -146,4 +166,6 @@ async def read_items():
             return [Item(name=row['name']) for row in rows]
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error reading items: {e}")
+
+
 
