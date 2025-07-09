@@ -4,3 +4,5 @@ asyncpg==0.29.0
 pydantic==2.7.4
 prometheus_client==0.20.0
 psutil
+python-dotenv
+secure==0.2.1

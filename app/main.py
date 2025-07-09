@@ -1,21 +1,41 @@
-# app/main.py
 import os
+import asyncio
 import asyncpg
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import Optional # Import Optional for type hinting compatibility with Python 3.9
 import psutil
-# Import Prometheus client library
-from prometheus_client import Counter, generate_latest, Gauge , ProcessCollector, REGISTRY
+from fastapi import FastAPI, HTTPException, Request
 from starlette.responses import PlainTextResponse
-from starlette.requests import Request
-# Initialize FastAPI app
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from secure import SecureHeaders
+from prometheus_client import generate_latest, REGISTRY
+
+# Import your modules
+from app.config import settings
+from app.metrics.system_metrics import update_system_metrics, cpu_utilization_gauge
+from app.middleware.metrics_middleware import MetricsMiddleware
+from app.routers import api, health
+
+secure_headers = SecureHeaders()
+
+# FastAPI app
 app = FastAPI(
     title="FastAPI PostgreSQL App",
     description="A simple FastAPI application connecting to PostgreSQL with a connection pool."
 )
 
-# Middleware
+# Middleware: GZip compression
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# Middleware: CORS (adjust allow_origins for production)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Middleware: Logging requests
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     print(f"Request: {request.method} {request.url}")
@@ -23,60 +43,46 @@ async def log_requests(request: Request, call_next):
     print(f"Response status: {response.status_code}")
     return response
 
+# Middleware: Secure headers (like Helmet)
+@app.middleware("http")
+async def secure_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    secure_headers.starlette(response)
+    return response
+
+# Custom Metrics Middleware (must be after other middlewares to capture their processing time if desired)
+app.add_middleware(MetricsMiddleware)
+
 # Database connection pool variable
 db_pool = None
 
-# Pydantic model for a simple item, now only with 'name'
-class Item(BaseModel):
-    name: str
-
-# Prometheus Metrics
-# Counter for items created
-items_created_counter = Counter(
-    'items_created_total',
-    'Total number of items created.'
-)
-# Gauge for current number of items in the database
-items_in_db_gauge = Gauge(
-    'items_in_database',
-    'Current number of items stored in the database.'
-)
-
-# Register process metrics (includes process_cpu_seconds_total)
-#ProcessCollector().register(REGISTRY)
-
-# Custom gauge for CPU utilization percentage
-cpu_utilization_gauge = Gauge(
-    'process_cpu_utilization_percent',
-    'Process CPU utilization percentage'
-)
-
-
+# Background task for updating system metrics
+async def update_system_metrics_task():
+    while True:
+        update_system_metrics()
+        await asyncio.sleep(15) # Update every 15 seconds
 
 @app.on_event("startup")
 async def startup_event():
     """
     Event handler that runs when the FastAPI application starts up.
-    It initializes the PostgreSQL connection pool.
+    It initializes the PostgreSQL connection pool and starts background tasks.
     """
     global db_pool
     try:
-        # Get database URL from environment variables
-        database_url = os.getenv("DATABASE_URL")
-        if not database_url:
-            raise ValueError("DATABASE_URL environment variable is not set.")
-
         # Create the connection pool
-        # min_size: minimum number of connections to keep open
-        # max_size: maximum number of connections to allow
         db_pool = await asyncpg.create_pool(
-            database_url,
+            settings.DATABASE_URL,
             min_size=1,
             max_size=10,
             timeout=30, # seconds to wait for a connection from the pool
             command_timeout=30 # seconds to wait for a command to execute
         )
-        print(f"Successfully connected to PostgreSQL at {database_url}")
+        print(f"Successfully connected to PostgreSQL at {settings.DATABASE_URL}")
+
+        # Pass the db_pool to routers that need it
+        api.db_pool = db_pool
+        health.db_pool = db_pool
 
         # Create a table if it doesn't exist and update gauge on startup
         async with db_pool.acquire() as connection:
@@ -88,13 +94,15 @@ async def startup_event():
             """)
             print("Table 'items' checked/created successfully.")
 
-            # Moved this line inside the 'async with' block
+            # Initial count for items_in_db_gauge
             count = await connection.fetchval("SELECT COUNT(*) FROM items")
-            items_in_db_gauge.set(count)
+            api.items_in_db_gauge.set(count)
+
+        # Start background task for system metrics
+        asyncio.create_task(update_system_metrics_task())
 
     except Exception as e:
         print(f"Failed to connect to PostgreSQL or create table: {e}")
-        # In a real application, you might want to exit or log this more severely
         raise HTTPException(status_code=500, detail=f"Database connection error: {e}")
 
 
@@ -109,63 +117,23 @@ async def shutdown_event():
         await db_pool.close()
         print("PostgreSQL connection pool closed.")
 
+# Include routers
+app.include_router(api.router)
+app.include_router(health.router)
 
 @app.get("/")
 async def read_root():
     """
     Root endpoint to verify the API is running.
     """
-    return {"message": "FastAPI Metrics Monitoring System is running!"}
+    return "Welcome to the FastAPI Metrics App!"
 
 @app.get("/metrics", response_class=PlainTextResponse)
 async def metrics():
     """
     Endpoint to expose Prometheus metrics.
     """
-    cpu_percent = psutil.cpu_percent(interval=0.1)
-    cpu_utilization_gauge.set(cpu_percent)
+    # This ensures the CPU utilization is updated just before metrics are exposed
+    # For a more consistent view, the background task is better, but this provides fresh data on scrape.
+    # update_system_metrics() # Called by background task now.
     return PlainTextResponse(generate_latest())
-
-@app.post("/data", response_model=Item)
-async def create_item(item: Item):
-    """
-    Endpoint to create a new item in the database.
-    Acquires a connection from the pool, inserts data, and releases the connection.
-    Increments the items_created_total counter.
-    """
-    if not db_pool:
-        raise HTTPException(status_code=500, detail="Database pool not initialized.")
-
-    async with db_pool.acquire() as connection:
-        try:
-            await connection.execute(
-                "INSERT INTO items (name) VALUES ($1)",
-                item.name
-            )
-            items_created_counter.inc() # Increment the counter
-            items_in_db_gauge.inc() # Increment the gauge
-            return item
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error creating item: {e}")
-
-
-@app.get("/data", response_model=list[Item])
-async def read_items():
-    """
-    Endpoint to retrieve all items from the database.
-    Acquires a connection from the pool, fetches data, and releases the connection.
-    """
-    if not db_pool:
-        raise HTTPException(status_code=500, detail="Database pool not initialized.")
-
-    async with db_pool.acquire() as connection:
-        try:
-            rows = await connection.fetch("SELECT name FROM items")
-            # Update gauge with the current count
-            items_in_db_gauge.set(len(rows))
-            return [Item(name=row['name']) for row in rows]
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error reading items: {e}")
-
-
-
