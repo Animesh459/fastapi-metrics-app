@@ -23,13 +23,11 @@ The application demonstrates how to integrate Prometheus client library with Fas
 * **Monitoring Stack:**
     * **Prometheus Client:** Python library for metrics collection.
     * **Prometheus:** Time-series database for metrics storage and querying.
-    * **Grafana:** Dashboarding and visualization tool.
 * **Database:**
     * **PostgreSQL:** Relational database for data storage (`asyncpg` for async access).
 * **Utilities:**
     * **psutil:** For system-level process information.
     * **secure:** For adding security headers.
-    * **python-dotenv:** For managing environment variables.
 
 ## Architecture Design
 

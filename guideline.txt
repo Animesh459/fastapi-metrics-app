@@ -1,0 +1,129 @@
+## Key Components
+
+* **Metrics Middleware (`app/middleware/metrics_middleware.py`):** Intercepts all HTTP requests to record start time, method, path, response status, and duration. It updates Prometheus counters and histograms for request volume, duration, and sizes.
+* **System Metrics Collector (`app/metrics/system_metrics.py`):** Utilizes `prometheus_client.ProcessCollector` for standard process metrics and `psutil` for custom CPU utilization and thread count. A background task in `main.py` periodically updates these metrics.
+* **Metrics Endpoint (`/metrics`):** Exposes Prometheus-formatted metrics, accessible by Prometheus for scraping.
+* **Database Integration:** Uses `asyncpg` with a connection pool for efficient PostgreSQL interactions, tracking the number of items in the database.
+
+## Implementation Details
+
+### Core Endpoints
+
+* **`GET /`**: Basic welcome message.
+* **`GET /health`**: Health check endpoint that verifies database connectivity.
+* **`GET /metrics`**: Exposes Prometheus metrics in plain text format.
+* **`POST /data`**: Creates a new item in the database. Increments `items_created_total` and `items_in_database` metrics.
+* **`GET /data`**: Retrieves all items from the database. Updates `items_in_database` metric.
+
+### Metrics Configuration
+
+* **Standardized Labels:** Metrics use consistent labels like `method`, `endpoint`, `status_code` for easy querying.
+* **Histogram Buckets:** `http_request_duration_seconds` and size histograms are configured with sensible default buckets, which can be customized in `app/metrics/http_metrics.py`.
+* **Naming Conventions:** Metrics follow Prometheus best practices (e.g., `_total` for counters, `_seconds` for durations, `_bytes` for sizes).
+
+## Deployment Instructions
+
+### Prerequisites
+
+* Docker and Docker Compose installed.
+
+### Steps
+
+1.  **Clone the repository:**
+    ```bash
+    git clone <your-repo-url>
+    cd fastapi-metrics-app
+    ```
+2.  **Create `.env` file:**
+    Copy `.env.example` to `.env` and configure your PostgreSQL connection string.
+    ```bash
+    cp .env.example .env
+    # Edit .env if needed, e.g., DATABASE_URL=postgresql://user:password@db:5432/mydatabase
+    ```
+3.  **Build and run the services using Docker Compose:**
+    ```bash
+    docker-compose up --build -d
+    ```
+    This will:
+    * Build the FastAPI application Docker image.
+    * Start a PostgreSQL container.
+    * Start a Prometheus container configured to scrape your FastAPI app.
+    * Start a Grafana container.
+
+### Accessing Services
+
+* **FastAPI App:** `http://localhost:8000`
+* **FastAPI Metrics:** `http://localhost:8000/metrics`
+* **Prometheus UI:** `http://localhost:9090`
+
+## Monitoring Setup
+
+### Prometheus Queries (Examples)
+
+* **Total HTTP Requests:**
+    ```promql
+    http_requests_total
+    ```
+* **Request Rate (last 5 minutes):**
+    ```promql
+    rate(http_requests_total[5m])
+    ```
+* **CPU Utilization Percentage:**
+    ```promql
+    process_cpu_utilization_percent
+    ```
+* **Resident Memory Usage (bytes):**
+    ```promql
+    process_resident_memory_bytes
+    ```
+* **95th Percentile Request Latency for `/data` GET requests:**
+    ```promql
+    histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{endpoint="/data",method="GET"}[5m])) by (le))
+    ```
+* **Number of items in the database:**
+    ```promql
+    items_in_database
+    ```
+
+## Metrics Reference Guide
+
+This section details the Prometheus metrics exposed by the application:
+
+### System Metrics
+
+| Metric Name                  | Type    | Description                                       | Labels                                                                                                                   |
+| :--------------------------- | :------ | :------------------------------------------------ | :----------------------------------------------------------------------------------------------------------------------- |
+| `process_cpu_seconds_total`  | Counter | Total CPU time consumed by the process.           | (Standard Prometheus process labels: `job`, `instance`, `le`)                                                            |
+| `process_cpu_utilization_percent` | Gauge   | Current CPU utilization percentage of the process. |                                                                                                                          |
+| `process_resident_memory_bytes` | Gauge   | Resident Set Size (RSS) memory used by the process. | (Standard Prometheus process labels)                                                                                     |
+| `process_virtual_memory_bytes` | Gauge   | Virtual Memory Size (VMS) used by the process.   | (Standard Prometheus process labels)                                                                                     |
+| `process_start_time_seconds` | Gauge   | Unix timestamp of the process start time.         | (Standard Prometheus process labels)                                                                                     |
+| `process_open_fds`           | Gauge   | Number of open file descriptors.                  | (Standard Prometheus process labels)                                                                                     |
+| `process_threads`            | Gauge   | Total number of threads in the process.           |                                                                                                                          |
+| `process_uptime_seconds`     | Gauge   | Uptime of the process in seconds.                 | (Calculated from `time() - process_start_time_seconds`)                                                                |
+
+*Note: `process_open_fds` and `process_uptime_seconds` are part of the default `ProcessCollector`.*
+
+### HTTP Application Metrics
+
+| Metric Name                       | Type      | Description                                                 | Labels                                    |
+| :-------------------------------- | :-------- | :---------------------------------------------------------- | :---------------------------------------- |
+| `http_requests_total`             | Counter   | Total number of HTTP requests.                              | `method`, `endpoint`, `status_code`       |
+| `http_request_duration_seconds`   | Histogram | Histogram of HTTP request durations.                        | `method`, `endpoint`                      |
+| `http_request_size_bytes`         | Histogram | Histogram of HTTP request body sizes in bytes.              | `method`, `endpoint`                      |
+| `http_response_size_bytes`        | Histogram | Histogram of HTTP response body sizes in bytes.             | `method`, `endpoint`, `status_code`       |
+
+### Application Specific Metrics
+
+| Metric Name         | Type    | Description                                         | Labels |
+| :------------------ | :------ | :-------------------------------------------------- | :----- |
+| `items_created_total` | Counter | Total number of items created via the `/data` endpoint. |        |
+| `items_in_database` | Gauge   | Current number of items stored in the database.     |        |
+
+## Configuration Options
+
+* **`DATABASE_URL`**: PostgreSQL connection string. Set in the `.env` file or as an environment variable.
+* **`APP_HOST`**: Host for the FastAPI application (default: `0.0.0.0`).
+* **`APP_PORT`**: Port for the FastAPI application (default: `8000`).
+
+These can be configured via environment variables or in the `.env` file.
