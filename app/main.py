@@ -11,7 +11,7 @@ from prometheus_client import generate_latest, REGISTRY
 
 # Import your modules
 from app.config import settings
-from app.metrics.system_metrics import update_system_metrics, cpu_utilization_gauge
+from app.metrics.system_metrics import update_system_metrics
 from app.middleware.metrics_middleware import MetricsMiddleware
 from app.routers import api, health
 
